@@ -109,38 +109,6 @@ jobs:
             echo 'ccflags-y += -Wno-error=designated-init' >> drivers/kernelsu/Kbuild
           fi
 
-          # Sultan leaves CONFIG_KPROBES unset. KernelSU only links
-          # hook/*/patch_memory.o (defines ksu_patch_text) when KPROBES=y, but
-          # selinux_hide.o always calls it → undefined reference at link time.
-          # Keep SUSFS syscall hooks excluded; only force-include patch_memory.
-          if [ -f drivers/kernelsu/Kbuild ]; then
-            python3 <<'PY'
-from pathlib import Path
-p = Path("drivers/kernelsu/Kbuild")
-text = p.read_text()
-needle = """# Core utilities ('selinux hide'/hooks)
-ifeq ($(strip $(CONFIG_KPROBES)),y)
-kernelsu-objs += hook/lsm_hook.o
-ifdef KSU_ARCH
-kernelsu-objs += hook/$(KSU_ARCH)/patch_memory.o
-endif
-endif"""
-repl = """# Core utilities ('selinux hide'/hooks)
-# Always build patch_memory for selinux_hide (Sultan has CONFIG_KPROBES unset).
-ifeq ($(strip $(CONFIG_KPROBES)),y)
-kernelsu-objs += hook/lsm_hook.o
-endif
-ifdef KSU_ARCH
-kernelsu-objs += hook/$(KSU_ARCH)/patch_memory.o
-endif"""
-if needle in text:
-    p.write_text(text.replace(needle, repl, 1))
-    print("Kbuild: force-include patch_memory.o")
-else:
-    raise SystemExit("Kbuild patch_memory pattern not found — update workflow")
-PY
-          fi
-
       - name: Apply SUSFS Patches
         if: contains(matrix.features, 'susfs')
         run: |
@@ -169,6 +137,10 @@ PY
           DEFCONFIG="./arch/arm64/configs/${{ inputs.codename }}_defconfig"
           echo "# KernelSU Configuration" >> "$DEFCONFIG"
           echo "CONFIG_KSU=y" >> "$DEFCONFIG"
+          # KernelSU links hook/*/patch_memory.o (ksu_patch_text for selinux_hide)
+          # only when CONFIG_KPROBES=y. Sultan leaves it unset → link failure.
+          # With CONFIG_KSU_SUSFS=y, syscall-hook objects stay excluded in Kbuild.
+          echo "CONFIG_KPROBES=y" >> "$DEFCONFIG"
           if [[ "${{ matrix.features }}" == *"susfs"* ]]; then
             echo "CONFIG_KSU_SUSFS=y" >> "$DEFCONFIG"
           else
