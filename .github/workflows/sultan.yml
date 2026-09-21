@@ -98,6 +98,17 @@ jobs:
           echo "Adding KernelSU-Next (pershoot dev-susfs)..."
           curl -LSs "https://raw.githubusercontent.com/pershoot/KernelSU-Next/dev-susfs/kernel/setup.sh" | bash -s dev-susfs
 
+          # Sultan builds with GCC + -Werror=designated-init. KernelSU's
+          # `struct selinux_state fake_state = {0};` is a positional init and
+          # fails the build (GKI uses Clang and does not hit this).
+          if [ -f drivers/kernelsu/feature/selinux_hide.c ]; then
+            sed -i 's/struct selinux_state fake_state = {0};/struct selinux_state fake_state = {};/' \
+              drivers/kernelsu/feature/selinux_hide.c
+          fi
+          if [ -f drivers/kernelsu/Kbuild ] && ! grep -q 'Wno-error=designated-init' drivers/kernelsu/Kbuild; then
+            echo 'ccflags-y += -Wno-error=designated-init' >> drivers/kernelsu/Kbuild
+          fi
+
       - name: Apply SUSFS Patches
         if: contains(matrix.features, 'susfs')
         run: |
