@@ -73,6 +73,21 @@ jobs:
           echo "Sultan branch: $SULTAN_BRANCH (6.1.145 — matches EvoX android14-11 ABI)"
 
           git clone --depth=1 -b "$ANYKERNEL_BRANCH" https://github.com/TheWildJames/AnyKernel3.git
+          # Keep ROM DTBs: drop the vendor_kernel_boot flash block from AnyKernel.
+          # Flashing concatenated dts/*.dtb into vendor_kernel_boot no-boots shiba on EvoX.
+          python3 - <<'PY'
+from pathlib import Path
+p = Path("AnyKernel3/anykernel.sh")
+text = p.read_text()
+marker = "\n# vendor_kernel_boot installation"
+if marker in text:
+    text = text.split(marker, 1)[0].rstrip() + "\n"
+    p.write_text(text)
+    print("AnyKernel: boot partition only (skipped vendor_kernel_boot)")
+else:
+    print("AnyKernel: vendor_kernel_boot block not found (ok)")
+PY
+
           git clone --depth=1 https://github.com/WildKernels/kernel_patches.git
           # Pin Sultan's current tensynos tip (Android 16 / Linux 6.1.145)
           git clone --depth=1 -b "$SULTAN_BRANCH" https://github.com/kerneltoast/android_kernel_google_tensynos.git
@@ -238,9 +253,12 @@ jobs:
           set -euo pipefail
           cd "$CONFIG"
 
-          echo "Copying Image.lz4 and concatenating DTB files..."
+          # Image only. Do NOT pack concatenated dts/*.dtb — flashing that into
+          # vendor_kernel_boot brick-boots Pixels on custom ROMs (EvoX). Keep the
+          # ROM's stock DTBs; only replace the kernel in boot (matches WildKernels).
+          echo "Copying Image.lz4 (leaving stock vendor_kernel_boot DTBs alone)..."
           cp ./out/arch/arm64/boot/Image.lz4 ../AnyKernel3/Image.lz4
-          cat ./out/google-devices/${{ inputs.codename }}/dts/*.dtb > ../AnyKernel3/dtb
+          rm -f ../AnyKernel3/dtb
 
       - name: Create ZIP Files for Different Formats
         run: |
