@@ -1,13 +1,19 @@
 name: Build and Release Sultan Kernels
 
 permissions:
-  contents: write  # Allow writing to repository contents (for pushing tags)
-  actions: write   # Allows triggering actions
-  
+  contents: write
+  actions: write
+
 on:
   workflow_dispatch:
-        
+    inputs:
+      make_release:
+        description: "Create a GitHub release after a successful build"
+        type: boolean
+        default: true
+
 jobs:
+  # Pixel 7 / 7 Pro / 7a
   build-kernel-gs201:
     uses: ./.github/workflows/sultan.yml
     secrets: inherit
@@ -15,7 +21,8 @@ jobs:
       codename: "gs201"
       android_version: "android14"
       kernel_version: "6.1"
-      
+
+  # Pixel 8 / 8 Pro
   build-kernel-zuma:
     uses: ./.github/workflows/sultan.yml
     secrets: inherit
@@ -24,6 +31,7 @@ jobs:
       android_version: "android14"
       kernel_version: "6.1"
 
+  # Pixel 9 / 9 Pro / 9 Pro XL
   build-kernel-zumapro:
     uses: ./.github/workflows/sultan.yml
     secrets: inherit
@@ -33,71 +41,53 @@ jobs:
       kernel_version: "6.1"
 
   trigger-release:
+    if: ${{ inputs.make_release }}
     runs-on: ubuntu-latest
     needs:
-        - build-kernel-gs201
-        - build-kernel-zuma
-        - build-kernel-zumapro
+      - build-kernel-gs201
+      - build-kernel-zuma
+      - build-kernel-zumapro
     env:
-      REPO_OWNER: TheWildJames
-      REPO_NAME: Sultan_KernelSU_SUSFS
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      RELEASE_NAME: "Sultan Kernels With KernelSU Next & SUSFS v2.1.0"
+      RELEASE_NAME: "Sultan 6.1.145 + KernelSU-Next & SUSFS (A16 / android14-11 ABI)"
       RELEASE_NOTES: |
-        This release contains KernelSU Next and SUSFS v2.1.0
-        
-        ### 📦 Variants Included:
-        * **stock**: The pure, unmodified base Sultan kernel. Built straight from source with no extra patches or additions.
-        * **wksu**: Includes Wild KernelSU (WKSU) integrated into the kernel. No other modifications.
-        * **wksu-susfs**: The ultimate package. Includes KernelSU Next, SUSFS v2.1.0, and extra custom configurations (Mountify support, networking tweaks, BBR TCP congestion, and IPSet support).
-        
-        ⚠️ **COMPATIBILITY NOTICE** ⚠️
-        Please ensure compatibility!
-        
-        **Sultan Commits Used:**
-        -> https://github.com/kerneltoast/android_kernel_google_tensynos/commit/TENSYNOS_HASH
-        
-        Module: 
-        -> https://github.com/sidex15/ksu_module_susfs
-        
-        Managers:
-        -> https://github.com/KernelSU-Next/KernelSU-Next
-        
-        Features:
-        [+] KernelSU Next
-        [+] SUSFS v2.1.0
-        [+] Mountify Support
-        [+] BBR TCP Congestion Control
-        [+] IPSet Support
+        Built from Sultan `16.0.0-sultan` (Linux **6.1.145**) for Android 16 ROMs that ship the android14-11 GKI ABI (e.g. Evolution X 11.x).
+
+        ### Variants
+        * **stock**: Unmodified Sultan base.
+        * **ksun-susfs**: KernelSU-Next (pershoot `dev-susfs`) + SUSFS, Mountify, BBR, and IPSet.
+
+        ### Device mapping
+        * **gs201** — Pixel 7 / 7 Pro / 7a
+        * **zuma** — Pixel 8 / 8 Pro
+        * **zumapro** — Pixel 9 / 9 Pro / 9 Pro XL
+
+        **Sultan commit:** https://github.com/kerneltoast/android_kernel_google_tensynos/commit/TENSYNOS_HASH
+
+        Module: https://github.com/sidex15/ksu_module_susfs
+        Manager: https://github.com/KernelSU-Next/KernelSU-Next
 
     steps:
-      # Checkout the code
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      # Get the Latest Tag from GitHub
       - name: Generate and Create New Tag
         run: |
-            # Fetch the latest tag from GitHub (this is the latest tag based on the GitHub API)
-            LATEST_TAG=$(gh api repos/$REPO_OWNER/$REPO_NAME/tags --jq '.[0].name')
-            if [ -z "$LATEST_TAG" ]; then
-              LATEST_TAG="v2.0.0-r0"  # Default to v1.5.7-0 if no tag exists
-            fi
-            
-            # Increment the suffix (e.g., v1.5.7-0 becomes v1.5.7-1)
-            NEW_TAG=$(echo "$LATEST_TAG" | awk -F'-r' '{suffix=$2; if (!suffix) suffix=0; suffix++; printf "%s-r%d", $1, suffix}')
-            
-            # Output the new tag to be used
-            echo "New tag: $NEW_TAG"
-            
-            # Set the new tag as an environment variable to be used in later steps
-            echo "NEW_TAG=${NEW_TAG}" >> $GITHUB_ENV
-            
-            # Create the tag in the repository
-            git tag $NEW_TAG
-            git push origin $NEW_TAG
-            
-      # Download Artifacts for A12 (Only if A12 Build is successful or input is true or empty)
+          set -euo pipefail
+          REPO="${{ github.repository }}"
+
+          LATEST_TAG=$(gh api "repos/$REPO/tags" --jq '.[0].name' 2>/dev/null || true)
+          if [ -z "${LATEST_TAG:-}" ] || [ "$LATEST_TAG" = "null" ]; then
+            LATEST_TAG="v2.0.0-r0"
+          fi
+
+          NEW_TAG=$(echo "$LATEST_TAG" | awk -F'-r' '{suffix=$2; if (!suffix) suffix=0; suffix++; printf "%s-r%d", $1, suffix}')
+          echo "New tag: $NEW_TAG"
+          echo "NEW_TAG=${NEW_TAG}" >> "$GITHUB_ENV"
+
+          git tag "$NEW_TAG"
+          git push origin "$NEW_TAG"
+
       - name: Download Artifacts
         uses: actions/download-artifact@v4
         with:
@@ -105,55 +95,45 @@ jobs:
 
       - name: Fetch and Inject Sultan Commits
         run: |
-          TENSYNOS_COMMIT=$(git ls-remote https://github.com/kerneltoast/android_kernel_google_tensynos HEAD | awk '{print $1}')
-          
-          # Replace placeholders in RELEASE_NOTES
+          set -euo pipefail
+          TENSYNOS_COMMIT=$(git ls-remote https://github.com/kerneltoast/android_kernel_google_tensynos refs/heads/16.0.0-sultan | awk '{print $1}')
           UPDATED_NOTES="${RELEASE_NOTES//TENSYNOS_HASH/$TENSYNOS_COMMIT}"
-          
-          EOF=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
-          echo "RELEASE_NOTES<<$EOF" >> $GITHUB_ENV
-          echo "$UPDATED_NOTES" >> $GITHUB_ENV
-          echo "$EOF" >> $GITHUB_ENV
 
-      # Create GitHub Release and upload files if make_release is true
+          EOF=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
+          {
+            echo "RELEASE_NOTES<<$EOF"
+            echo "$UPDATED_NOTES"
+            echo "$EOF"
+          } >> "$GITHUB_ENV"
+
       - name: Create GitHub Release
-        uses: actions/create-release@v1
-        with:
-          tag_name: ${{ env.NEW_TAG }}  # Use the generated tag for the release
-          release_name: ${{ env.RELEASE_NAME }}  # Pass the RELEASE_NAME to the action
-          body: ${{ env.RELEASE_NOTES }}  # Pass the RELEASE_NOTES to the action
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release create "$NEW_TAG" \
+            --title "$RELEASE_NAME" \
+            --notes "$RELEASE_NOTES"
 
       - name: Upload Release Assets Dynamically
         run: |
-          # Loop through all files in the downloaded-artifacts directory
+          set -euo pipefail
+          shopt -s nullglob
           for file in ./downloaded-artifacts/kernel-*/*; do
-              # Skip directories
-              if [ -d "$file" ]; then
-                  continue
-              fi
+            if [ -d "$file" ]; then
+              continue
+            fi
 
-              # Extract directory, filename, and extension
-              dir=$(dirname "$file")
-              filename=$(basename "$file")
-              name="${filename%.*}"
-              ext="${filename##*.}"
-              
-              # Append the release tag version to the filename
-              new_filepath="$dir/${name}-${{ env.NEW_TAG }}.${ext}"
-              mv "$file" "$new_filepath"
+            dir=$(dirname "$file")
+            filename=$(basename "$file")
+            name="${filename%.*}"
+            ext="${filename##*.}"
+            new_filepath="$dir/${name}-${NEW_TAG}.${ext}"
+            mv "$file" "$new_filepath"
 
-              # Upload the renamed file to the GitHub release
-              echo "Uploading $new_filepath..."
-              gh release upload ${{ env.NEW_TAG }} "$new_filepath"
+            echo "Uploading $new_filepath..."
+            gh release upload "$NEW_TAG" "$new_filepath"
           done
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NEW_TAG: ${{ env.NEW_TAG }}
 
-      # Display Files Uploaded
       - name: Display Files Uploaded
         run: |
           echo "GitHub release created with the following files:"
-          ls ./downloaded-artifacts/**/*
+          find ./downloaded-artifacts -type f -print

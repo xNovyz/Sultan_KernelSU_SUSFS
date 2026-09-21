@@ -1,10 +1,10 @@
 name: Sultan
 permissions:
-  contents: write # Allow writing to repository contents (for pushing tags)
-  actions: write # Allows triggering actions
+  contents: write
+  actions: write
 
 on:
-  workflow_call: # This allows this workflow to be called from another workflow
+  workflow_call:
     inputs:
       codename:
         required: true
@@ -24,104 +24,113 @@ jobs:
       matrix:
         features: ["stock", "ksun-susfs"]
     steps:
-      #- name: Maximize Build Space
-      #  uses: AdityaGarg8/remove-unwanted-software@v5
-      #  with:
-      #    remove-dotnet: 'true'          # Frees ~2 GB
-      #    remove-android: 'true'         # Frees ~9 GB
-      #    remove-haskell: 'true'         # Frees ~5.2 GB
-      #    remove-codeql: 'true'          # Frees ~5.4 GB
-      #    remove-docker-images: 'true'   # Frees ~3.2 GB
-      #    remove-large-packages: 'true'  # Frees ~3.1 GB
-      #    remove-swapfile: 'true'        # Frees ~4 GB
-      #    remove-cached-tools: 'false'   # Avoid unless confirmed safe
-      #    verbose: 'true'                # Enable detailed logging
+      - name: Maximize Build Space
+        uses: AdityaGarg8/remove-unwanted-software@v5
+        with:
+          remove-dotnet: "true"
+          remove-android: "true"
+          remove-haskell: "true"
+          remove-codeql: "true"
+          remove-docker-images: "true"
+          remove-large-packages: "true"
+          remove-swapfile: "true"
+          remove-cached-tools: "false"
+          verbose: "true"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison flex libssl-dev libelf-dev cpio zip unzip \
+            curl git patch python3 wget
 
       - name: Download and extract GCC 14.2.0 toolchain
         run: |
           echo "Downloading GCC 14.2.0 cross-compiler toolchain..."
-          wget https://www.kernel.org/pub/tools/crosstool/files/bin/x86_64/14.2.0/x86_64-gcc-14.2.0-nolibc-aarch64-linux.tar.gz
-          echo "Extracting .gz file..."
-          gunzip x86_64-gcc-14.2.0-nolibc-aarch64-linux.tar.gz
-          echo "Extracting .tar file..."
-          tar -xf x86_64-gcc-14.2.0-nolibc-aarch64-linux.tar
+          wget -q https://www.kernel.org/pub/tools/crosstool/files/bin/x86_64/14.2.0/x86_64-gcc-14.2.0-nolibc-aarch64-linux.tar.gz
+          echo "Extracting toolchain..."
+          tar -xzf x86_64-gcc-14.2.0-nolibc-aarch64-linux.tar.gz
+          rm -f x86_64-gcc-14.2.0-nolibc-aarch64-linux.tar.gz
           echo "GCC 14.2.0 toolchain extracted successfully"
 
       - name: Set CONFIG Environment Variable
         run: |
           CONFIG="android_kernel_google_tensynos"
-
-          # Set CONFIG as an environment variable for future steps
-          echo "CONFIG=$CONFIG" >> $GITHUB_ENV
-
+          echo "CONFIG=$CONFIG" >> "$GITHUB_ENV"
           echo "CONFIG set to: $CONFIG"
 
       - name: Clone AnyKernel3 and Other Dependencies
         run: |
+          set -euo pipefail
           echo "Cloning AnyKernel3 and other dependencies..."
 
           ANYKERNEL_BRANCH="sultan-${{ inputs.codename }}"
-
-          # Debug print the branches
-          echo "Using branch for AnyKernel3: $ANYKERNEL_BRANCH"
-
-          # Clone repositories using the branch names
-          git clone https://github.com/TheWildJames/AnyKernel3.git -b "$ANYKERNEL_BRANCH"
-          git clone https://github.com/TheWildJames/kernel_patches.git
-          git clone https://github.com/TheWildJames/android_kernel_google_tensynos --depth=1
           SUSFS_BRANCH="gki-${{ inputs.android_version }}-${{ inputs.kernel_version }}"
-          git clone https://gitlab.com/simonpunk/susfs4ksu.git -b "$SUSFS_BRANCH"
+          SULTAN_BRANCH="16.0.0-sultan"
+
+          echo "AnyKernel3 branch: $ANYKERNEL_BRANCH"
+          echo "SUSFS branch: $SUSFS_BRANCH"
+          echo "Sultan branch: $SULTAN_BRANCH (6.1.145 — matches EvoX android14-11 ABI)"
+
+          git clone --depth=1 -b "$ANYKERNEL_BRANCH" https://github.com/TheWildJames/AnyKernel3.git
+          git clone --depth=1 https://github.com/WildKernels/kernel_patches.git
+          # Pin Sultan's current tensynos tip (Android 16 / Linux 6.1.145)
+          git clone --depth=1 -b "$SULTAN_BRANCH" https://github.com/kerneltoast/android_kernel_google_tensynos.git
+
+          git clone --depth=1 -b "$SUSFS_BRANCH" https://gitlab.com/simonpunk/susfs4ksu.git
+
+          # Same as WildKernels GKI: cherry-pick pershoot's latest two
+          # gki-android14-6.1-dev commits (no-features core + Toolkit coexistence).
+          # Local pershoot/ patches were removed from kernel_patches in Sep 2026.
+          cd susfs4ksu
+          git fetch https://gitlab.com/pershoot/susfs4ksu.git gki-android14-6.1-dev || true
+          git log ..FETCH_HEAD --oneline -n 2 | awk '{print $1}' | tac | xargs -r git cherry-pick 2>/dev/null || true
+          cd ..
+
+          echo "Sultan HEAD: $(git -C android_kernel_google_tensynos rev-parse HEAD)"
+          echo "SUSFS HEAD: $(git -C susfs4ksu rev-parse HEAD)"
 
       - name: Add KernelSU
         if: contains(matrix.features, 'ksun')
         run: |
-          echo "Changing to configuration directory: $CONFIG..."
+          set -euo pipefail
           cd "$CONFIG"
-
-          echo "Adding KernelSU..."
+          echo "Adding KernelSU-Next (pershoot dev-susfs)..."
           curl -LSs "https://raw.githubusercontent.com/pershoot/KernelSU-Next/dev-susfs/kernel/setup.sh" | bash -s dev-susfs
 
       - name: Apply SUSFS Patches
         if: contains(matrix.features, 'susfs')
         run: |
-          # Apply pershoot susfs4ksu coexistence patches
-          cd susfs4ksu
-          patch -p1 < "${{ github.workspace }}/kernel_patches/pershoot/susfs4ksu/0001-pershoot-Allow-core-to-be-built-with-no-features.patch"
-          patch -p1 < "${{ github.workspace }}/kernel_patches/pershoot/susfs4ksu/0002-pershoot-Implement-SuSFS-and-Toolkit-coexistence.patch"
-          cd ..
-
-          echo "Changing to configuration directory: $CONFIG..."
+          set -euo pipefail
           cd "$CONFIG"
 
-          SUSFS_VERSION="2.0.0"
-
           echo "Applying SUSFS patches..."
-
-          # Copy SUSFS patches
           cp ../susfs4ksu/kernel_patches/fs/* ./fs/
           cp ../susfs4ksu/kernel_patches/include/linux/* ./include/linux/
 
+          # Temporarily drop Sultan's libperfmgr_redirect guard so the SUSFS
+          # open.c hunks can apply, then restore it.
           perl -0pi -e 's/if \(IS_ERR\(f\) && !libperfmgr_redirect\(&f, dfd, tmp, &op, how\)\) \{/if (IS_ERR(f)) {/g' fs/open.c
 
-          # Apply SUSFS patch
           patch -p1 < ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ inputs.android_version }}-${{ inputs.kernel_version }}.patch || true
 
           perl -0pi -e 's/if \(IS_ERR\(f\)\) \{/if (IS_ERR(f) && !libperfmgr_redirect(&f, dfd, tmp, &op, how)) {/g' fs/open.c
-          
+
           patch -p1 < ../kernel_patches/sultan/sys.c_fix.patch
 
       - name: Configure KernelSU
         if: contains(matrix.features, 'ksun')
         run: |
+          set -euo pipefail
           cd "$CONFIG"
-          # KernelSU Configuration
-          echo "# KernelSU Configuration" >> ./arch/arm64/configs/${{ inputs.codename }}_defconfig
-          echo "CONFIG_KSU=y" >> ./arch/arm64/configs/${{ inputs.codename }}_defconfig
+          DEFCONFIG="./arch/arm64/configs/${{ inputs.codename }}_defconfig"
+          echo "# KernelSU Configuration" >> "$DEFCONFIG"
+          echo "CONFIG_KSU=y" >> "$DEFCONFIG"
           if [[ "${{ matrix.features }}" == *"susfs"* ]]; then
-            echo "CONFIG_KSU_SUSFS=y" >> ./arch/arm64/configs/${{ inputs.codename }}_defconfig
+            echo "CONFIG_KSU_SUSFS=y" >> "$DEFCONFIG"
           else
-            echo "CONFIG_KSU_MANUAL_HOOKS=y" >> ./arch/arm64/configs/${{ inputs.codename }}_defconfig
-            echo "CONFIG_KSU_SUSFS=n" >> ./arch/arm64/configs/${{ inputs.codename }}_defconfig
+            echo "CONFIG_KSU_MANUAL_HOOKS=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS=n" >> "$DEFCONFIG"
             patch -p1 < ../kernel_patches/wild/hooks/69_pure_manual_hooks_only.patch
           fi
 
@@ -129,19 +138,19 @@ jobs:
         if: matrix.features == 'ksun-susfs'
         run: |
           cd "$CONFIG"
-          # Mountify Support
-          echo "# Mountify Support" >> ./arch/arm64/configs/${{ inputs.codename }}_defconfig
-          echo "CONFIG_TMPFS_XATTR=y" >> ./arch/arm64/configs/${{ inputs.codename }}_defconfig
-          echo "CONFIG_TMPFS_POSIX_ACL=y" >> ./arch/arm64/configs/${{ inputs.codename }}_defconfig
+          DEFCONFIG="./arch/arm64/configs/${{ inputs.codename }}_defconfig"
+          echo "# Mountify Support" >> "$DEFCONFIG"
+          echo "CONFIG_TMPFS_XATTR=y" >> "$DEFCONFIG"
+          echo "CONFIG_TMPFS_POSIX_ACL=y" >> "$DEFCONFIG"
 
       - name: Configure Networking
         run: |
           cd "$CONFIG"
-          # Networking Configuration
-          echo "# Networking Configuration" >> ./arch/arm64/configs/${{ inputs.codename }}_defconfig
-          echo "CONFIG_IP_NF_TARGET_TTL=y" >> ./arch/arm64/configs/${{ inputs.codename }}_defconfig
-          echo "CONFIG_IP6_NF_TARGET_HL=y" >> ./arch/arm64/configs/${{ inputs.codename }}_defconfig
-          echo "CONFIG_IP6_NF_MATCH_HL=y" >> ./arch/arm64/configs/${{ inputs.codename }}_defconfig
+          DEFCONFIG="./arch/arm64/configs/${{ inputs.codename }}_defconfig"
+          echo "# Networking Configuration" >> "$DEFCONFIG"
+          echo "CONFIG_IP_NF_TARGET_TTL=y" >> "$DEFCONFIG"
+          echo "CONFIG_IP6_NF_TARGET_HL=y" >> "$DEFCONFIG"
+          echo "CONFIG_IP6_NF_MATCH_HL=y" >> "$DEFCONFIG"
 
       - name: Add IP SET & IPv6_NAT Support
         shell: bash
@@ -192,45 +201,35 @@ jobs:
       - name: Run sed and perl Commands
         if: matrix.features == 'ksun-susfs'
         run: |
-          echo "Changing to configuration directory: $CONFIG..."
           cd "$CONFIG"
-
-          echo "Running sed commands..."
           sed -i 's/CONFIG_LOCALVERSION="-Sultan"/CONFIG_LOCALVERSION="-Sultan-Wild"/' ./arch/arm64/configs/${{ inputs.codename }}_defconfig
-
           sed -i '/echo "+"$/d' scripts/setlocalversion
-
 
       - name: Build the Kernel
         run: |
-          echo "Changing to configuration directory: $CONFIG..."
+          set -euo pipefail
           cd "$CONFIG"
+          export PATH="$GITHUB_WORKSPACE/gcc-14.2.0-nolibc/aarch64-linux/bin:$PATH"
+          CROSS="$GITHUB_WORKSPACE/gcc-14.2.0-nolibc/aarch64-linux/bin/aarch64-linux-"
+          CC="${CROSS}gcc"
 
-          make CROSS_COMPILE=$GITHUB_WORKSPACE/gcc-14.2.0-nolibc/aarch64-linux/bin/aarch64-linux- CC=$GITHUB_WORKSPACE/gcc-14.2.0-nolibc/aarch64-linux/bin/aarch64-linux-gcc -j$(nproc --all) ${{ inputs.codename }}_defconfig
-          make CROSS_COMPILE=$GITHUB_WORKSPACE/gcc-14.2.0-nolibc/aarch64-linux/bin/aarch64-linux- CC=$GITHUB_WORKSPACE/gcc-14.2.0-nolibc/aarch64-linux/bin/aarch64-linux-gcc LOCALVERSION_AUTO=0 -j$(nproc --all)
+          make CROSS_COMPILE="$CROSS" CC="$CC" -j"$(nproc)" "${{ inputs.codename }}_defconfig"
+          make CROSS_COMPILE="$CROSS" CC="$CC" LOCALVERSION_AUTO=0 -j"$(nproc)"
+
+          test -f out/arch/arm64/boot/Image.lz4
 
       - name: Copy Images
         run: |
-          echo "Changing to configuration directory: $CONFIG..."
+          set -euo pipefail
           cd "$CONFIG"
 
           echo "Copying Image.lz4 and concatenating DTB files..."
           cp ./out/arch/arm64/boot/Image.lz4 ../AnyKernel3/Image.lz4
-          #if [ "${{ inputs.codename }}" == "gs201" ]; then
-          #  cat ./out/google-devices/gs201/dts/*.dtb > ../AnyKernel3/dtb
-          #  #cp ./out/google-devices/gs201/dts/dtbo.img ../AnyKernel3/dtbo.img
-          #elif [ "${{ inputs.codename }}" == "zuma" ]; then
-          #  cat ./out/google-devices/zuma/dts/*.dtb > ../AnyKernel3/dtb
-          #elif [ "${{ inputs.codename }}" == "zumapro" ]; then
-          #  cat ./out/google-devices/zumapro/dts/*.dtb > ../AnyKernel3/dtb
-          #fi
+          cat ./out/google-devices/${{ inputs.codename }}/dts/*.dtb > ../AnyKernel3/dtb
 
       - name: Create ZIP Files for Different Formats
         run: |
-          echo "Navigating to AnyKernel3 directory..."
           cd ./AnyKernel3
-
-          # Zip the files in the AnyKernel3 directory with a new naming convention
           ZIP_NAME="${{ inputs.codename }}-a16-${{ matrix.features }}-anykernel3.zip"
           echo "Creating zip file $ZIP_NAME..."
           zip -r "../$ZIP_NAME" ./*
