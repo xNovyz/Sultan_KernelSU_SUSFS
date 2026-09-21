@@ -7,14 +7,24 @@ permissions:
 on:
   workflow_dispatch:
     inputs:
+      device:
+        description: "Device to build (Pixel 8 / shiba = zuma)"
+        type: choice
+        options:
+          - zuma
+          - gs201
+          - zumapro
+          - all
+        default: zuma
       make_release:
         description: "Create a GitHub release after a successful build"
         type: boolean
-        default: true
+        default: false
 
 jobs:
   # Pixel 7 / 7 Pro / 7a
   build-kernel-gs201:
+    if: ${{ inputs.device == 'all' || inputs.device == 'gs201' }}
     uses: ./.github/workflows/sultan.yml
     secrets: inherit
     with:
@@ -22,8 +32,9 @@ jobs:
       android_version: "android14"
       kernel_version: "6.1"
 
-  # Pixel 8 / 8 Pro
+  # Pixel 8 / 8 Pro (shiba / husky)
   build-kernel-zuma:
+    if: ${{ inputs.device == 'all' || inputs.device == 'zuma' }}
     uses: ./.github/workflows/sultan.yml
     secrets: inherit
     with:
@@ -33,6 +44,7 @@ jobs:
 
   # Pixel 9 / 9 Pro / 9 Pro XL
   build-kernel-zumapro:
+    if: ${{ inputs.device == 'all' || inputs.device == 'zumapro' }}
     uses: ./.github/workflows/sultan.yml
     secrets: inherit
     with:
@@ -41,12 +53,19 @@ jobs:
       kernel_version: "6.1"
 
   trigger-release:
-    if: ${{ inputs.make_release }}
     runs-on: ubuntu-latest
     needs:
       - build-kernel-gs201
       - build-kernel-zuma
       - build-kernel-zumapro
+    if: |
+      always() &&
+      !cancelled() &&
+      inputs.make_release &&
+      (needs.build-kernel-gs201.result == 'success' || needs.build-kernel-gs201.result == 'skipped') &&
+      (needs.build-kernel-zuma.result == 'success' || needs.build-kernel-zuma.result == 'skipped') &&
+      (needs.build-kernel-zumapro.result == 'success' || needs.build-kernel-zumapro.result == 'skipped') &&
+      (needs.build-kernel-gs201.result == 'success' || needs.build-kernel-zuma.result == 'success' || needs.build-kernel-zumapro.result == 'success')
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       RELEASE_NAME: "Sultan 6.1.145 + KernelSU-Next & SUSFS (A16 / android14-11 ABI)"
@@ -59,7 +78,7 @@ jobs:
 
         ### Device mapping
         * **gs201** — Pixel 7 / 7 Pro / 7a
-        * **zuma** — Pixel 8 / 8 Pro
+        * **zuma** — Pixel 8 / 8 Pro (shiba / husky)
         * **zumapro** — Pixel 9 / 9 Pro / 9 Pro XL
 
         **Sultan commit:** https://github.com/kerneltoast/android_kernel_google_tensynos/commit/TENSYNOS_HASH
